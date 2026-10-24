@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Redundant Trailing Chunk**: Every file longer than the chunk overlap (200 characters with the default `overlap: 50`) got one extra chunk at the end holding only the last lines of the chunk before it, costing an extra embedding request per file and competing in search with the chunk it duplicated. Chunking now stops once a chunk reaches the end of the file, and so does re-chunking of oversized chunks (#333) - @MaxFreedomPollard
+
 ## [0.37.0] - 2026-09-10
 
 ### Added
