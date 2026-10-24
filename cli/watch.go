@@ -1094,7 +1094,7 @@ func watchProjectWithEventObserverAndFence(ctx context.Context, projectRoot stri
 		WithCustomExtensions(cfg.Chunking.CustomExtensions)
 
 	// Initialize chunker
-	chunker := indexer.NewChunker(cfg.Chunking.Size, cfg.Chunking.Overlap)
+	chunker := indexer.NewFileChunker(cfg.Chunking.Strategy, cfg.Chunking.Size, cfg.Chunking.Overlap)
 	processorRegistry := buildFrameworkRegistry(cfg)
 
 	// Initialize indexer
@@ -3031,7 +3031,7 @@ func initializeWorkspaceRuntime(ctx context.Context, ws *config.Workspace, proje
 	scanner := indexer.NewScanner(project.Path, ignoreMatcher).
 		WithCustomExtensions(ws.Chunking.CustomExtensions).
 		WithCustomExtensions(projectCfg.Chunking.CustomExtensions)
-	chunker := indexer.NewChunker(projectCfg.Chunking.Size, projectCfg.Chunking.Overlap)
+	chunker := indexer.NewFileChunker(projectCfg.Chunking.Strategy, projectCfg.Chunking.Size, projectCfg.Chunking.Overlap)
 	processorRegistry := buildFrameworkRegistry(projectCfg)
 	vectorStore := &projectPrefixStore{
 		store:         sharedStore,

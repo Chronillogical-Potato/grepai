@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **AST-Aware Chunking (experimental)**: New opt-in, experimental `chunking.strategy: ast` splits Go, Python, JavaScript and TypeScript files along function, class and declaration boundaries (cAST algorithm) instead of fixed-size windows, so a chunk is usually a whole function or a group of related declarations. It requires building with the `treesitter` tag. Other builds and unknown strategy names log a warning and use the fixed-size chunker, as do other file types (#332) - @Don-Yin
+
 ### Changed
 
 - Batch Ollama indexing requests through the modern `/api/embed` endpoint, with bounded request sizes and automatic fallback for older servers that only provide `/api/embeddings` (#314).
