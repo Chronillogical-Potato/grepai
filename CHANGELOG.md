@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-25
+
 ### Added
 
-- **One-Time Manual Indexing**: Add `grepai index` for updating a project's vector, symbol, and optional RPG indexes without starting a watcher, plus `grepai index --workspace <name>` for explicit multi-project workspace indexing (addresses the manual indexing portion of #193)
+- **One-Time Manual Indexing**: New `grepai index` command updates a project's vector, symbol and optional RPG indexes once and exits, without starting a watcher or daemon, using the same incremental logic as `grepai watch`. `grepai index --workspace <name>` indexes every project of a workspace, continues past a failing project and returns an aggregate error, so CI jobs and Git hooks fail loudly instead of leaving a partial index (#299, addresses the manual indexing part of #193) - @harumiWeb
+
+### Fixed
+
+- **Qdrant Re-Indexed Unchanged Files**: With the Qdrant backend, every watcher start re-embedded every file, because the store never kept per-file metadata, so neither the modification-time nor the content-hash check could ever match. Each point now stores the whole-file hash (`file_hash`) and unchanged files are skipped. Existing indexes need no migration: unchanged files are skipped from the next start and gain the field when they change. In workspace mode, the content-hash embedding cache is now reachable as well (#324) - @greenham13
+- **Edits Made During a Scan Were Lost**: `watch.last_index_time` was set to the end of the startup scan, so a file modified while a long scan was running was skipped on every later restart and stayed stale in search results until it was edited again. The timestamp now records the start of the scan, is repaired when missing even if nothing needed indexing, and is saved on clean shutdown (#328) - @TangoMan75
+
+### Performance
+
+- **Fewer File Reads on Restart**: The symbol index phase now reuses the files already read and hashed by the vector phase instead of reading them a second time, and startup reports `Index up to date: N files checked, 0 reindexed` when nothing changed (#328) - @TangoMan75
 
 ## [0.38.0] - 2026-10-24
 
@@ -753,7 +764,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release
 
-[Unreleased]: https://github.com/yoanbernabeu/grepai/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/yoanbernabeu/grepai/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/yoanbernabeu/grepai/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/yoanbernabeu/grepai/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/yoanbernabeu/grepai/compare/v0.36.1...v0.37.0
 [0.36.1]: https://github.com/yoanbernabeu/grepai/compare/v0.36.0...v0.36.1
