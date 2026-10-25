@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-25
+
+First stable release. Existing configs and indexes keep working. On first start, the symbol index is re-extracted once (trace fixes), Windows single-project indexes that stored backslash paths are rebuilt, and an index whose embedding model no longer matches the config is rebuilt.
+
+### Documentation
+
+- **New Documentation Site**: new landing page, rewritten guides, per-page illustrations, and SEO metadata (Open Graph images, sitemap, `llms.txt`) (#343)
+
 ### Added
 
 - **GDScript in Trace**: `grepai trace` now extracts GDScript (`.gd`) functions and calls, including functions with annotations on the same line (#296, from #297) - @tadki
@@ -19,11 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Stats Never Recorded From the CLI**: `grepai search` and `grepai trace` wrote their stats entry from a fire-and-forget goroutine, so the process usually exited before the write and `grepai stats` stayed empty for CLI usage. The command now waits for the write, bounded to 500ms.
-- **Boost Patterns Missed Top-Level Directories**: Default patterns such as `/src/`, `/tests/` and `/docs/` never matched top-level directories because indexed paths have no leading slash, and never matched at all on Windows because of backslashes. Paths are now matched slash-separated with a leading `/`.
-- **TOON Output Field Names**: TOON headers contained raw tag options such as `"symbol_name,omitempty"`, empty `omitempty` fields were always emitted, and `json:"-"` fields leaked. TOON output (CLI and MCP) now uses the same field names and rules as JSON.
-- **`grepai init` Flags**: `--model` was ignored for `ollama`, `lmstudio` and `synthetic`; `--backend postgres|qdrant` with `--yes` left the DSN or endpoint empty instead of writing the backend defaults; the help text listed only Ollama/OpenAI and GOB/PostgreSQL.
-- **Help Texts**: `grepai mcp-serve --help` listed 11 of the 14 MCP tools, and `grepai watch --help` gave the wrong log file name inside git repositories (`grepai-worktree-<id>.log`).
+- **Stats Never Recorded From the CLI**: `grepai search` and `grepai trace` wrote their stats entry from a fire-and-forget goroutine, so the process usually exited before the write and `grepai stats` stayed empty for CLI usage. The command now waits for the write, bounded to 500ms. (#345)
+- **Boost Patterns Missed Top-Level Directories**: Default patterns such as `/src/`, `/tests/` and `/docs/` never matched top-level directories because indexed paths have no leading slash, and never matched at all on Windows because of backslashes. Paths are now matched slash-separated with a leading `/`. (#345)
+- **TOON Output Field Names**: TOON headers contained raw tag options such as `"symbol_name,omitempty"`, empty `omitempty` fields were always emitted, and `json:"-"` fields leaked. TOON output (CLI and MCP) now uses the same field names and rules as JSON. (#345)
+- **`grepai init` Flags**: `--model` was ignored for `ollama`, `lmstudio` and `synthetic`; `--backend postgres|qdrant` with `--yes` left the DSN or endpoint empty instead of writing the backend defaults; the help text listed only Ollama/OpenAI and GOB/PostgreSQL. (#345)
+- **Help Texts**: `grepai mcp-serve --help` listed 11 of the 14 MCP tools, and `grepai watch --help` gave the wrong log file name inside git repositories (`grepai-worktree-<id>.log`). (#345)
 - **Config Edits Lost While Watching**: Preserve user changes to `.grepai/config.yaml`, including `ignore`, when saving `watch.last_index_time` after indexing (#179, #344) - @Don-Yin
 - **Windows Index Wiped on Workspace Watch Restart**: Scanner paths are now normalized to forward slashes so they match the workspace store keys; legacy single-project indexes with backslash paths are removed as orphans on the next index pass (#329) - @wwylon
 - **Python Call Edges Lost in Trace**: An apostrophe in a `#` comment (`# don't`) opened a string that hid every later call in the file, `//` (floor division) was treated as a comment, and `'''` docstrings with an apostrophe closed early. Python comments and triple-quoted strings are now handled, Python syntax keywords are no longer reported as calls, and existing symbol indexes are re-extracted once (#280)
@@ -805,7 +813,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release
 
-[Unreleased]: https://github.com/yoanbernabeu/grepai/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/yoanbernabeu/grepai/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/yoanbernabeu/grepai/compare/v0.39.0...v1.0.0
 [0.39.0]: https://github.com/yoanbernabeu/grepai/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/yoanbernabeu/grepai/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/yoanbernabeu/grepai/compare/v0.36.1...v0.37.0

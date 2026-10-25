@@ -112,7 +112,7 @@ grepai expects Ollama at `http://localhost:11434`. You can change this with `emb
 
 ```bash
 grepai version
-# grepai version 0.39.0
+# grepai version 1.0.0
 
 # If you use Ollama: check that the server answers and lists nomic-embed-text
 curl http://localhost:11434/api/tags
