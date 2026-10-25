@@ -32,6 +32,11 @@ type IndexStats struct {
 	FilesRemoved  int
 	Duration      time.Duration
 	ScannedFiles  []FileMeta // All files found during scan (for reuse by callers)
+	// HashedFiles holds every file the decision phase actually read from disk
+	// (path -> FileInfo with content + sha256), whether or not it needed
+	// re-indexing. Callers such as symbol extraction reuse this map to avoid
+	// a second full read of unchanged files during startup.
+	HashedFiles map[string]FileInfo
 }
 
 // ProgressInfo contains progress information for indexing
@@ -168,6 +173,14 @@ func (idx *Indexer) IndexAllWithBatchProgress(ctx context.Context, onProgress Pr
 		if decision.countAsSkipped {
 			stats.FilesSkipped++
 		}
+		// Keep every successfully read file so startup callers (symbol
+		// extraction) can reuse content + hash without scanning again.
+		if decision.hashed != nil {
+			if stats.HashedFiles == nil {
+				stats.HashedFiles = make(map[string]FileInfo, len(fileMetas))
+			}
+			stats.HashedFiles[decision.hashed.Path] = *decision.hashed
+		}
 		if decision.file != nil {
 			filesToIndex = append(filesToIndex, *decision.file)
 		}
@@ -229,6 +242,10 @@ func (idx *Indexer) IndexAllWithBatchProgress(ctx context.Context, onProgress Pr
 type fileScanDecision struct {
 	// file is non-nil when the file needs (re)indexing.
 	file *FileInfo
+	// hashed is non-nil when this scan successfully read the file content
+	// (regardless of whether re-indexing is needed). It lets callers reuse
+	// the content + hash instead of scanning the same path again.
+	hashed *FileInfo
 	// countAsSkipped mirrors the original sequential bookkeeping: mtime-gated
 	// skips and unreadable/binary/oversized files count toward
 	// stats.FilesSkipped, but files that are unchanged (same content hash)
@@ -269,10 +286,12 @@ func (idx *Indexer) decideFileScan(ctx context.Context, fileMeta FileMeta) (file
 	}
 
 	if doc != nil && doc.Hash == file.Hash && len(doc.ChunkIDs) > 0 {
-		return fileScanDecision{}, nil // File unchanged and has chunks
+		// Unchanged and already indexed: no re-embed, but keep the read
+		// result so symbol extraction does not scan this file again.
+		return fileScanDecision{hashed: file}, nil
 	}
 
-	return fileScanDecision{file: file}, nil
+	return fileScanDecision{file: file, hashed: file}, nil
 }
 
 // scanWorkerLimit returns the number of concurrent workers to use when

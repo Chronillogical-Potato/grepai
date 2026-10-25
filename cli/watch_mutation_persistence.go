@@ -47,4 +47,12 @@ func persistWorkspaceOnShutdown(ctx context.Context, st store.VectorStore, runti
 	if err := persistWorkspaceStores(ctx, st, runtimes); err != nil {
 		log.Printf("Warning: failed to persist workspace indexes on shutdown: %v", err)
 	}
+	// Flush per-project watch.last_index_time surgically (stamp only when a
+	// config file already exists) so restarts can use the mtime gate.
+	for _, runtime := range runtimes {
+		if runtime == nil || runtime.cfg == nil {
+			continue
+		}
+		persistLastIndexTimeOnShutdown(runtime.project.Path, runtime.cfg, runtime.cfg.Watch.LastIndexTime)
+	}
 }

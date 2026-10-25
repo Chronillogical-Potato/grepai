@@ -745,6 +745,68 @@ func runWatchLoop(ctx context.Context, st store.VectorStore, symbolStore *trace.
 	}
 }
 
+// refreshLastIndexTimeAfterScan updates watch.last_index_time after a
+// successful startup scan and persists the project config.
+//
+// scanStartedAt is the timestamp captured before the scan began. Using the
+// scan start (not the scan end) keeps files modified during a slow scan from
+// being mtime-skipped on the next restart: their mtime is >= scanStartedAt,
+// so the gate rechecks them.
+//
+// The stamp is refreshed when:
+//   - any file/chunks were indexed (the scan produced new index work), or
+//   - the stored value is still zero (first run, failed prior save, or a
+//     restart that never wrote the field).
+//
+// Zero is the expensive case: without it, the next restart's mtime gate is
+// disabled and every file is read + hashed again.
+func refreshLastIndexTimeAfterScan(cfg *config.Config, projectRoot string, stats *indexer.IndexStats, scanStartedAt time.Time) {
+	if stats == nil || cfg == nil {
+		return
+	}
+	if stats.FilesIndexed == 0 && stats.ChunksCreated == 0 && !cfg.Watch.LastIndexTime.IsZero() {
+		return
+	}
+	if scanStartedAt.IsZero() {
+		scanStartedAt = time.Now()
+	}
+	cfg.Watch.LastIndexTime = scanStartedAt
+	if err := cfg.Save(projectRoot); err != nil {
+		log.Printf("Warning: failed to save config: %v", err)
+	}
+}
+
+// persistLastIndexTimeOnShutdown flushes watch.last_index_time without
+// overwriting other config fields the user may have edited while watch ran.
+//
+// When a config file already exists on disk it is reloaded and only the
+// stamp is updated. When no file exists yet, the in-memory config (which
+// already carries the stamp) is written so the next restart can use the
+// mtime gate.
+func persistLastIndexTimeOnShutdown(projectRoot string, memCfg *config.Config, lastIndexTime time.Time) {
+	if memCfg == nil || projectRoot == "" || lastIndexTime.IsZero() {
+		return
+	}
+	if config.Exists(projectRoot) {
+		onDisk, err := config.Load(projectRoot)
+		if err != nil {
+			log.Printf("Warning: failed to reload config to persist last_index_time on shutdown for %s: %v", projectRoot, err)
+			return
+		}
+		if onDisk.Watch.LastIndexTime.Equal(lastIndexTime) {
+			return
+		}
+		onDisk.Watch.LastIndexTime = lastIndexTime
+		if err := onDisk.Save(projectRoot); err != nil {
+			log.Printf("Warning: failed to save last_index_time on shutdown for %s: %v", projectRoot, err)
+		}
+		return
+	}
+	if err := memCfg.Save(projectRoot); err != nil {
+		log.Printf("Warning: failed to save config on shutdown for %s: %v", projectRoot, err)
+	}
+}
+
 func runInitialScan(ctx context.Context, idx *indexer.Indexer, scanner *indexer.Scanner, extractor *trace.RegexExtractor, symbolStore *trace.GOBSymbolStore, tracedLanguages []string, lastIndexTime time.Time, isBackgroundChild bool, onScan func(current, total int, file string), onEmbed func(info indexer.BatchProgressInfo), processors ...*framework.ProcessorRegistry) (*indexer.IndexStats, error) {
 	// Initial scan with progress
 	if !isBackgroundChild {
@@ -794,21 +856,34 @@ func runInitialScan(ctx context.Context, idx *indexer.Indexer, scanner *indexer.
 	}
 
 	if !isBackgroundChild {
-		fmt.Printf("Initial scan complete: %d files indexed, %d chunks created, %d files removed, %d skipped (took %s)\n",
-			stats.FilesIndexed, stats.ChunksCreated, stats.FilesRemoved, stats.FilesSkipped, stats.Duration.Round(time.Millisecond))
+		if stats.FilesIndexed == 0 && stats.ChunksCreated == 0 && stats.FilesRemoved == 0 {
+			fmt.Printf("Index up to date: %d files checked, 0 reindexed (took %s)\n",
+				len(stats.ScannedFiles), stats.Duration.Round(time.Millisecond))
+		} else {
+			fmt.Printf("Initial scan complete: %d files indexed, %d chunks created, %d files removed, %d skipped (took %s)\n",
+				stats.FilesIndexed, stats.ChunksCreated, stats.FilesRemoved, stats.FilesSkipped, stats.Duration.Round(time.Millisecond))
+		}
 	} else {
-		log.Printf("Initial scan complete: %d files indexed, %d chunks created, %d files removed, %d skipped (took %s)",
-			stats.FilesIndexed, stats.ChunksCreated, stats.FilesRemoved, stats.FilesSkipped, stats.Duration.Round(time.Millisecond))
+		if stats.FilesIndexed == 0 && stats.ChunksCreated == 0 && stats.FilesRemoved == 0 {
+			log.Printf("Index up to date: %d files checked, 0 reindexed (took %s)",
+				len(stats.ScannedFiles), stats.Duration.Round(time.Millisecond))
+		} else {
+			log.Printf("Initial scan complete: %d files indexed, %d chunks created, %d files removed, %d skipped (took %s)",
+				stats.FilesIndexed, stats.ChunksCreated, stats.FilesRemoved, stats.FilesSkipped, stats.Duration.Round(time.Millisecond))
+		}
 	}
 
-	// Index symbols for traced languages
+	// Index symbols for traced languages.
+	// Reuse FileInfo/hash results from the vector decision phase when
+	// available so unchanged files are not read a second time.
 	if !isBackgroundChild {
-		fmt.Println("Building symbol index...")
+		fmt.Println("Checking symbol index...")
 	} else {
-		log.Println("Building symbol index...")
+		log.Println("Checking symbol index...")
 	}
 	symbolCount := 0
 	files := stats.ScannedFiles
+	hashedFiles := stats.HashedFiles
 
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
@@ -833,13 +908,23 @@ func runInitialScan(ctx context.Context, idx *indexer.Indexer, scanner *indexer.
 			}
 		}
 
-		fileInfo, err := scanner.ScanFile(file.Path)
-		if err != nil {
-			log.Printf("Warning: failed to scan %s for symbols: %v", file.Path, err)
-			continue
+		var fileInfo *indexer.FileInfo
+		if hashedFiles != nil {
+			if fi, ok := hashedFiles[file.Path]; ok {
+				copied := fi
+				fileInfo = &copied
+			}
 		}
 		if fileInfo == nil {
-			continue
+			scanned, err := scanner.ScanFile(file.Path)
+			if err != nil {
+				log.Printf("Warning: failed to scan %s for symbols: %v", file.Path, err)
+				continue
+			}
+			if scanned == nil {
+				continue
+			}
+			fileInfo = scanned
 		}
 
 		// Skip extraction when BOTH the content hash AND the extractor
@@ -876,10 +961,21 @@ func runInitialScan(ctx context.Context, idx *indexer.Indexer, scanner *indexer.
 		log.Printf("Warning: failed to persist symbol index: %v", err)
 	}
 	if !isBackgroundChild {
-		fmt.Printf("Symbol index built: %d symbols extracted\n", symbolCount)
+		if symbolCount == 0 {
+			fmt.Printf("Symbol index unchanged (0 symbols extracted)\n")
+		} else {
+			fmt.Printf("Symbol index built: %d symbols extracted\n", symbolCount)
+		}
 	} else {
-		log.Printf("Symbol index built: %d symbols extracted", symbolCount)
+		if symbolCount == 0 {
+			log.Printf("Symbol index unchanged (0 symbols extracted)")
+		} else {
+			log.Printf("Symbol index built: %d symbols extracted", symbolCount)
+		}
 	}
+
+	// Release per-file content retained for symbol reuse; callers only need counts.
+	stats.HashedFiles = nil
 
 	return stats, nil
 }
@@ -1256,6 +1352,14 @@ func runProjectWatchLoopWithFence(ctx context.Context, st store.VectorStore, sym
 				if err := rpgStore.Persist(ctx); err != nil {
 					log.Printf("Warning: failed to persist RPG graph on shutdown for %s: %v", projectRoot, err)
 				}
+			}
+			// Flush watch.last_index_time surgically so the next restart can
+			// use the mtime fast-path gate without re-hashing every file.
+			// Only the stamp is written when a config already exists on disk;
+			// other fields the user may have edited during the session are left
+			// alone.
+			if cfg != nil {
+				persistLastIndexTimeOnShutdown(projectRoot, cfg, cfg.Watch.LastIndexTime)
 			}
 		})
 	}
@@ -2298,10 +2402,11 @@ func handleFileEvent(ctx context.Context, idx *indexer.Indexer, scanner *indexer
 			onStats(projectRoot, delta)
 		}
 
-		// Update last_index_time with throttling (only write if 30 seconds have passed)
+		// Advance last_index_time in memory on every successful index so a
+		// clean shutdown can flush it. Disk writes stay throttled.
 		now := time.Now()
+		cfg.Watch.LastIndexTime = now
 		if now.Sub(*lastConfigWrite) >= configWriteThrottle {
-			cfg.Watch.LastIndexTime = now
 			if err := cfg.Save(projectRoot); err != nil {
 				log.Printf("Warning: failed to save config: %v", err)
 			}
@@ -2424,7 +2529,7 @@ func printProgress(current, total int, filePath string) {
 		displayPath = "..." + filePath[len(filePath)-maxPathLen+3:]
 	}
 
-	watchProgressOutput.render(fmt.Sprintf("Indexing [%s] %3.0f%% (%d/%d) %s", bar, percent, current, total, displayPath))
+	watchProgressOutput.render(fmt.Sprintf("Checking [%s] %3.0f%% (%d/%d) %s", bar, percent, current, total, displayPath))
 }
 
 func printBatchProgress(info indexer.BatchProgressInfo) {

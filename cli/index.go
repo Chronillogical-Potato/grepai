@@ -90,7 +90,9 @@ func newProjectIndexRuntime(ctx context.Context, projectRoot string, cfg *config
 
 	symbolStore := trace.NewGOBSymbolStore(config.GetSymbolIndexPath(projectRoot))
 	if err := symbolStore.Load(ctx); err != nil {
-		log.Printf("Warning: failed to load symbol index for %s: %v", projectRoot, err)
+		// Load failures leave the store empty: symbols are rebuilt from disk
+		// during the initial scan and persisted at the end of that scan.
+		log.Printf("Warning: failed to load symbol index for %s (will rebuild symbols): %v", projectRoot, err)
 	}
 
 	runtime := &projectIndexRuntime{
@@ -150,6 +152,7 @@ func (runtime *projectIndexRuntime) runInitialIndex(ctx context.Context, isBackg
 		return fmt.Errorf("failed to list indexed documents for %s: %w", runtime.projectRoot, err)
 	}
 
+	scanStartedAt := time.Now()
 	stats, err := runInitialScan(ctx, runtime.idx, runtime.scanner, runtime.extractor, runtime.symbolStore, runtime.tracedLanguages, runtime.cfg.Watch.LastIndexTime, isBackgroundChild, onScan, onEmbed, runtime.processor)
 	if err != nil {
 		return err
@@ -158,12 +161,7 @@ func (runtime *projectIndexRuntime) runInitialIndex(ctx context.Context, isBackg
 		return err
 	}
 
-	if stats.FilesIndexed > 0 || stats.ChunksCreated > 0 {
-		runtime.cfg.Watch.LastIndexTime = time.Now()
-		if err := runtime.cfg.Save(runtime.projectRoot); err != nil {
-			log.Printf("Warning: failed to save config for %s: %v", runtime.projectRoot, err)
-		}
-	}
+	refreshLastIndexTimeAfterScan(runtime.cfg, runtime.projectRoot, stats, scanStartedAt)
 
 	if runtime.rpgEncoder != nil {
 		if err := runtime.rpgEncoder.BuildFull(ctx, runtime.symbolStore, runtime.vectorStore, onRPG); err != nil {

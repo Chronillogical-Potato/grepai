@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"bufio"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -75,14 +76,16 @@ func NewIgnoreMatcher(projectRoot string, extraIgnore []string, externalGitignor
 		}
 	}
 
-	// Walk the project to find all .gitignore and .grepaiignore files
-	err := filepath.Walk(projectRoot, func(path string, info os.FileInfo, err error) error {
+	// Walk the project to find all .gitignore and .grepaiignore files.
+	// WalkDir (not Walk) reads directory entries directly from readdir,
+	// avoiding an extra Lstat per path — same rationale as watcher.addRecursive.
+	err := filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip inaccessible paths
 		}
 
 		// Skip directories that should be ignored by default
-		if info.IsDir() {
+		if d.IsDir() {
 			base := filepath.Base(path)
 			for _, dir := range extraIgnore {
 				if base == dir {

@@ -313,7 +313,7 @@ func TestPrintProgressAndBatchProgress_NoUIModeUsesNewlines(t *testing.T) {
 	if !strings.Contains(out, "\r") {
 		t.Fatalf("expected carriage returns in no-ui mode, got %q", out)
 	}
-	if !strings.Contains(out, "Indexing [") || !strings.Contains(out, "Embedding [") {
+	if !strings.Contains(out, "Checking [") || !strings.Contains(out, "Embedding [") {
 		t.Fatalf("expected inline progress output, got %q", out)
 	}
 }

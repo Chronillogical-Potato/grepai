@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -114,9 +115,10 @@ type FileMeta struct {
 }
 
 type Scanner struct {
-	root      string
-	ignore    *IgnoreMatcher
-	extraExts map[string]bool
+	root         string
+	ignore       *IgnoreMatcher
+	extraExts    map[string]bool
+	scanFileCall atomic.Int64
 }
 
 func NewScanner(root string, ignore *IgnoreMatcher) *Scanner {
@@ -293,7 +295,14 @@ func (s *Scanner) Scan() ([]FileInfo, []string, error) {
 	return files, skipped, err
 }
 
+// ScanFileCallCount returns how many times ScanFile has been called on this
+// scanner. Used by tests to assert startup paths do not re-read unchanged files.
+func (s *Scanner) ScanFileCallCount() int64 {
+	return s.scanFileCall.Load()
+}
+
 func (s *Scanner) ScanFile(relPath string) (*FileInfo, error) {
+	s.scanFileCall.Add(1)
 	absPath := filepath.Join(s.root, relPath)
 
 	// Skip minified files
