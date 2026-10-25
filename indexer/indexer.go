@@ -382,7 +382,7 @@ func (idx *Indexer) prepareFileChunks(
 }
 
 // createStoreChunks creates store.Chunk objects from chunk info and embeddings.
-func createStoreChunks(chunkInfos []ChunkInfo, embeddings [][]float32, now time.Time) ([]store.Chunk, []string) {
+func createStoreChunks(chunkInfos []ChunkInfo, embeddings [][]float32, fileHash string, now time.Time) ([]store.Chunk, []string) {
 	chunks := make([]store.Chunk, len(chunkInfos))
 	chunkIDs := make([]string, len(chunkInfos))
 
@@ -395,6 +395,7 @@ func createStoreChunks(chunkInfos []ChunkInfo, embeddings [][]float32, now time.
 			Content:     info.Content,
 			Vector:      embeddings[i],
 			Hash:        info.Hash,
+			FileHash:    fileHash,
 			ContentHash: info.ContentHash,
 			UpdatedAt:   now,
 		}
@@ -520,7 +521,7 @@ func (idx *Indexer) indexFilesBatched(
 	for _, pf := range preFilledFiles {
 		fd := fileData[pf.fdIndex]
 		idx.remapChunksToSource(fd.chunkInfos, fd.file.Path, fd.source, fd.lineMap)
-		chunks, chunkIDs := createStoreChunks(fd.chunkInfos, pf.vectors, now)
+		chunks, chunkIDs := createStoreChunks(fd.chunkInfos, pf.vectors, fd.file.Hash, now)
 		if err := idx.saveFileData(ctx, fd, chunks, chunkIDs); err != nil {
 			return filesIndexed, chunksCreated, err
 		}
@@ -546,7 +547,7 @@ func (idx *Indexer) indexFilesBatched(
 				continue
 			}
 			idx.remapChunksToSource(fd.chunkInfos, fd.file.Path, fd.source, fd.lineMap)
-			chunks, chunkIDs := createStoreChunks(fd.chunkInfos, embeddings, now)
+			chunks, chunkIDs := createStoreChunks(fd.chunkInfos, embeddings, fd.file.Hash, now)
 			if err := idx.saveFileData(ctx, fd, chunks, chunkIDs); err != nil {
 				return filesIndexed, chunksCreated, err
 			}
@@ -651,23 +652,7 @@ func (idx *Indexer) IndexFile(ctx context.Context, file FileInfo) (int, error) {
 
 	// Create store chunks
 	now := time.Now()
-	chunks := make([]store.Chunk, len(finalChunks))
-	chunkIDs := make([]string, len(finalChunks))
-
-	for i, info := range finalChunks {
-		chunks[i] = store.Chunk{
-			ID:          info.ID,
-			FilePath:    info.FilePath,
-			StartLine:   info.StartLine,
-			EndLine:     info.EndLine,
-			Content:     info.Content,
-			Vector:      vectors[i],
-			Hash:        info.Hash,
-			ContentHash: info.ContentHash,
-			UpdatedAt:   now,
-		}
-		chunkIDs[i] = info.ID
-	}
+	chunks, chunkIDs := createStoreChunks(finalChunks, vectors, file.Hash, now)
 
 	// Save chunks
 	if err := idx.store.SaveChunks(ctx, chunks); err != nil {

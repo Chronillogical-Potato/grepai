@@ -3034,6 +3034,14 @@ func (p *projectPrefixStore) SaveChunks(ctx context.Context, chunks []store.Chun
 	return p.store.SaveChunks(ctx, prefixedChunks)
 }
 
+// LookupByContentHash is global: identical content can reuse embeddings across projects.
+func (p *projectPrefixStore) LookupByContentHash(ctx context.Context, contentHash string) ([]float32, bool, error) {
+	if cache, ok := p.store.(store.EmbeddingCache); ok {
+		return cache.LookupByContentHash(ctx, contentHash)
+	}
+	return nil, false, nil
+}
+
 func (p *projectPrefixStore) DeleteByFile(ctx context.Context, filePath string) error {
 	prefixedPath := p.getPrefix() + "/" + p.toRelSlash(filePath)
 	return p.store.DeleteByFile(ctx, prefixedPath)
