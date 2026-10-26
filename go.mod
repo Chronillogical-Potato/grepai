@@ -12,7 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/mark3labs/mcp-go v1.3.0
 	github.com/pgvector/pgvector-go v0.4.1
-	github.com/qdrant/go-client v1.19.2
+	github.com/qdrant/go-client v1.20.0
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/spf13/cobra v1.10.2
