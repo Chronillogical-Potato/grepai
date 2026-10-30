@@ -235,8 +235,7 @@ func TestConcurrentPIDAccess(t *testing.T) {
 	}
 }
 
-func TestRemovePIDFile_CleansUpLockFile(t *testing.T) {
-	skipIfWindows(t)
+func TestRemovePIDFile_ReleasesLock(t *testing.T) {
 	logDir := t.TempDir()
 
 	// Write PID file (which creates lock file)
@@ -260,12 +259,47 @@ func TestRemovePIDFile_CleansUpLockFile(t *testing.T) {
 		t.Fatalf("RemovePIDFile() failed: %v", err)
 	}
 
-	// Verify both files are gone
+	// The PID file is gone and the lock is released. The lock file is kept on
+	// purpose (see releasePIDLock).
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
 		t.Error("PID file still exists after removal")
 	}
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		t.Error("Lock file still exists after removal")
+	if err := WritePIDFile(logDir); err != nil {
+		t.Fatalf("WritePIDFile() after removal failed, lock not released: %v", err)
+	}
+	if err := RemovePIDFile(logDir); err != nil {
+		t.Fatalf("RemovePIDFile() failed: %v", err)
+	}
+}
+
+// Regression test for #357: the PID lock must survive garbage collection.
+// An unreferenced *os.File is closed by its finalizer, which used to release
+// the main and workspace locks shortly after the daemon started.
+func TestPIDLocksSurviveGC(t *testing.T) {
+	logDir := t.TempDir()
+	cases := []struct {
+		name   string
+		write  func() error
+		remove func() error
+	}{
+		{"main", func() error { return WritePIDFile(logDir) }, func() error { return RemovePIDFile(logDir) }},
+		{"worktree", func() error { return WriteWorktreePIDFile(logDir, "wt-gc") }, func() error { return RemoveWorktreePIDFile(logDir, "wt-gc") }},
+		{"workspace", func() error { return WriteWorkspacePIDFile(logDir, "ws-gc") }, func() error { return RemoveWorkspacePIDFile(logDir, "ws-gc") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.write(); err != nil {
+				t.Fatalf("first write failed: %v", err)
+			}
+			t.Cleanup(func() { _ = tc.remove() })
+			for i := 0; i < 3; i++ {
+				runtime.GC()
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := tc.write(); err == nil {
+				t.Fatal("second write succeeded after GC: the PID lock was released while the daemon runs")
+			}
+		})
 	}
 }
 
@@ -311,6 +345,63 @@ func TestWorktreePIDLifecycle(t *testing.T) {
 	}
 	if pid != 0 {
 		t.Fatalf("ReadWorktreePIDFile() = %d after remove, want 0", pid)
+	}
+}
+
+// Regression test for #357: the worktree PID lock must stay held while the
+// daemon runs, so a second daemon for the same worktree fails to start.
+func TestWriteWorktreePIDFileHoldsLockUntilRemoved(t *testing.T) {
+	logDir := t.TempDir()
+	worktreeID := "wt-exclusive"
+
+	if err := WriteWorktreePIDFile(logDir, worktreeID); err != nil {
+		t.Fatalf("WriteWorktreePIDFile() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = RemoveWorktreePIDFile(logDir, worktreeID) })
+
+	// A second writer opens its own handle, like a second daemon process would.
+	if err := WriteWorktreePIDFile(logDir, worktreeID); err == nil {
+		t.Fatal("second WriteWorktreePIDFile() succeeded while the first daemon holds the lock")
+	}
+	pid, err := ReadWorktreePIDFile(logDir, worktreeID)
+	if err != nil || pid != os.Getpid() {
+		t.Fatalf("ReadWorktreePIDFile() = %d, %v; want %d, nil", pid, err, os.Getpid())
+	}
+
+	// Once the owner removes its PID file, the lock is released and a new
+	// daemon can start.
+	if err := RemoveWorktreePIDFile(logDir, worktreeID); err != nil {
+		t.Fatalf("RemoveWorktreePIDFile() failed: %v", err)
+	}
+	if err := WriteWorktreePIDFile(logDir, worktreeID); err != nil {
+		t.Fatalf("WriteWorktreePIDFile() after removal failed: %v", err)
+	}
+}
+
+// Another process removing the PID file (stale cleanup, --stop) must not
+// delete the lock file a live daemon holds: a second daemon would then lock a
+// new file at the same path and run alongside the first.
+func TestRemoveWorktreePIDFileByNonOwnerKeepsLock(t *testing.T) {
+	logDir := t.TempDir()
+	worktreeID := "wt-non-owner"
+	lockPath := GetWorktreePIDFile(logDir, worktreeID) + ".lock"
+
+	// Simulate a daemon in another process holding the lock.
+	holder, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("failed to open lock file: %v", err)
+	}
+	t.Cleanup(func() { holder.Close() })
+	if err := lockFile(holder); err != nil {
+		t.Fatalf("failed to lock: %v", err)
+	}
+
+	if err := RemoveWorktreePIDFile(logDir, worktreeID); err != nil {
+		t.Fatalf("RemoveWorktreePIDFile() failed: %v", err)
+	}
+	if err := WriteWorktreePIDFile(logDir, worktreeID); err == nil {
+		_ = RemoveWorktreePIDFile(logDir, worktreeID)
+		t.Fatal("WriteWorktreePIDFile() succeeded while another daemon holds the lock")
 	}
 }
 

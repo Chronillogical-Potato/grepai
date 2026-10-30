@@ -15,14 +15,49 @@ func removeProjectReadyMarker(logDir, worktreeID string) error {
 	return daemon.RemoveReadyFile(logDir)
 }
 
-func removeProjectDaemonMarkers(logDir, worktreeID string) error {
+// removeProjectDaemonMarkers removes the PID and ready markers left by the
+// daemon ownerPID. Markers written by another daemon are kept: when two starts
+// race, the losing child exits on the PID lock while the winner keeps running,
+// and deleting the winner's markers would hide it from --status and --stop.
+func removeProjectDaemonMarkers(logDir, worktreeID string, ownerPID int) error {
 	if worktreeID != "" {
-		return errors.Join(
-			daemon.RemoveWorktreeReadyFile(logDir, worktreeID),
-			daemon.RemoveWorktreePIDFile(logDir, worktreeID),
+		return removeDaemonMarkersOwnedBy(ownerPID,
+			func() (int, error) { return daemon.ReadWorktreePIDFile(logDir, worktreeID) },
+			func() error { return daemon.RemoveWorktreePIDFile(logDir, worktreeID) },
+			func() bool { return daemon.IsWorktreeStartedForPID(logDir, worktreeID, ownerPID) },
+			func() error { return daemon.RemoveWorktreeReadyFile(logDir, worktreeID) },
 		)
 	}
-	return errors.Join(daemon.RemoveReadyFile(logDir), daemon.RemovePIDFile(logDir))
+	return removeDaemonMarkersOwnedBy(ownerPID,
+		func() (int, error) { return daemon.ReadPIDFile(logDir) },
+		func() error { return daemon.RemovePIDFile(logDir) },
+		func() bool { return daemon.IsStartedForPID(logDir, ownerPID) },
+		func() error { return daemon.RemoveReadyFile(logDir) },
+	)
+}
+
+// removeWorkspaceDaemonMarkers is removeProjectDaemonMarkers for a workspace.
+func removeWorkspaceDaemonMarkers(logDir, workspaceName string, ownerPID int) error {
+	return removeDaemonMarkersOwnedBy(ownerPID,
+		func() (int, error) { return daemon.ReadWorkspacePIDFile(logDir, workspaceName) },
+		func() error { return daemon.RemoveWorkspacePIDFile(logDir, workspaceName) },
+		func() bool { return daemon.IsWorkspaceStartedForPID(logDir, workspaceName, ownerPID) },
+		func() error { return daemon.RemoveWorkspaceReadyFile(logDir, workspaceName) },
+	)
+}
+
+func removeDaemonMarkersOwnedBy(ownerPID int, readPID func() (int, error), removePID func() error, readyOwned func() bool, removeReady func() error) error {
+	// A PID file naming ownerPID is removed with the ready marker as before.
+	// Otherwise (another PID, no PID file, or one we cannot read) another
+	// daemon may own the slot, so only a ready marker written by ownerPID is
+	// removed.
+	if pid, err := readPID(); err == nil && pid == ownerPID {
+		return errors.Join(removeReady(), removePID())
+	}
+	if readyOwned() {
+		return removeReady()
+	}
+	return nil
 }
 
 var errNotReady = errors.New("not ready")

@@ -408,7 +408,7 @@ func startBackgroundWatch(logDir, worktreeID string) error {
 		if !stillIndexingAfterTimeout(exitCh, childPID, isStarted) {
 			primary := fmt.Errorf("background process failed to become ready: %w (check logs at %s)", err, logFile)
 			return abortBackgroundStart(primary, childPID, exitCh, func() error {
-				return removeProjectDaemonMarkers(logDir, worktreeID)
+				return removeProjectDaemonMarkers(logDir, worktreeID, childPID)
 			})
 		}
 		fmt.Printf("Background watcher started (PID %d), initial indexing still in progress\n", childPID)
@@ -2817,10 +2817,7 @@ func startBackgroundWorkspaceWatch(logDir string, ws *config.Workspace) error {
 		}) {
 			primary := fmt.Errorf("workspace background process failed to become ready: %w (check logs at %s)", err, wsLogFile)
 			return abortBackgroundStart(primary, childPID, exitCh, func() error {
-				return errors.Join(
-					daemon.RemoveWorkspaceReadyFile(logDir, ws.Name),
-					daemon.RemoveWorkspacePIDFile(logDir, ws.Name),
-				)
+				return removeWorkspaceDaemonMarkers(logDir, ws.Name, childPID)
 			})
 		}
 		fmt.Printf("Workspace watcher %s started (PID %d), initial indexing still in progress\n", ws.Name, childPID)
