@@ -468,7 +468,8 @@ func initializeStore(ctx context.Context, cfg *config.Config, projectRoot string
 		if collectionName == "" {
 			collectionName = store.SanitizeCollectionName(projectRoot)
 		}
-		return store.NewQdrantStore(ctx, cfg.Store.Qdrant.Endpoint, cfg.Store.Qdrant.Port, cfg.Store.Qdrant.UseTLS, collectionName, cfg.Store.Qdrant.APIKey, cfg.Embedder.GetDimensions())
+		namespace := store.QdrantProjectNamespace(cfg.Store.Qdrant.Collection, projectRoot)
+		return store.NewQdrantStoreWithNamespace(ctx, cfg.Store.Qdrant.Endpoint, cfg.Store.Qdrant.Port, cfg.Store.Qdrant.UseTLS, collectionName, cfg.Store.Qdrant.APIKey, cfg.Embedder.GetDimensions(), namespace, false)
 	default:
 		return nil, fmt.Errorf("unknown storage backend: %s", cfg.Store.Backend)
 	}
