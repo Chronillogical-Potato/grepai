@@ -1174,22 +1174,29 @@ func (s *Server) handleTraceCallers(ctx context.Context, request mcp.CallToolReq
 func (s *Server) handleTraceCallersFromStores(ctx context.Context, projectRoot string, symbolName string, compact bool, format string, stores []trace.SymbolStore) (*mcp.CallToolResult, error) {
 	// Aggregate results across stores
 	var firstSymbol *trace.Symbol
-	var allRefs []trace.Reference
+	type storeRef struct {
+		store trace.SymbolStore
+		ref   trace.Reference
+	}
+	var allRefs []storeRef
 
 	for _, ss := range stores {
 		symbols, err := ss.LookupSymbol(ctx, symbolName)
 		if err != nil {
 			log.Printf("Warning: failed to lookup symbol %q: %v", symbolName, err)
 		}
-		if len(symbols) > 0 && firstSymbol == nil {
-			sym := symbols[0]
-			firstSymbol = &sym
-		}
 		refs, err := ss.LookupCallers(ctx, symbolName)
 		if err != nil {
 			log.Printf("Warning: failed to lookup callers of %q: %v", symbolName, err)
 		}
-		allRefs = append(allRefs, refs...)
+		if len(symbols) > 0 && firstSymbol == nil {
+			// Same choice as the CLI among same-name definitions (#372).
+			sym := *trace.PickTargetSymbol(symbols, refs)
+			firstSymbol = &sym
+		}
+		for _, ref := range refs {
+			allRefs = append(allRefs, storeRef{store: ss, ref: ref})
+		}
 	}
 
 	if firstSymbol == nil {
@@ -1199,6 +1206,19 @@ func (s *Server) handleTraceCallersFromStores(ctx context.Context, projectRoot s
 			log.Printf("Warning: failed to encode empty trace result: %v", err)
 		}
 		return mcp.NewToolResultText(output), nil
+	}
+
+	var allCallers []trace.CallerInfo
+	for _, r := range allRefs {
+		allCallers = append(allCallers, trace.CallerInfo{
+			// Resolve the caller in its own store, like the CLI (#372).
+			Symbol: trace.ResolveCallerSymbol(ctx, r.store, r.ref),
+			CallSite: trace.CallSite{
+				File:    r.ref.File,
+				Line:    r.ref.Line,
+				Context: r.ref.Context,
+			},
+		})
 	}
 
 	var data any
@@ -1212,29 +1232,15 @@ func (s *Server) handleTraceCallersFromStores(ctx context.Context, projectRoot s
 			Query:   symbolName,
 			Mode:    "fast",
 			Symbol:  firstSymbol,
-			Callers: make([]CallerInfoCompact, 0, len(allRefs)),
+			Callers: make([]CallerInfoCompact, 0, len(allCallers)),
 		}
 
-		for _, ref := range allRefs {
-			var callerSym trace.Symbol
-			for _, ss := range stores {
-				callerSyms, err := ss.LookupSymbol(ctx, ref.CallerName)
-				if err != nil {
-					log.Printf("Warning: failed to lookup caller symbol %q: %v", ref.CallerName, err)
-				}
-				if len(callerSyms) > 0 {
-					callerSym = callerSyms[0]
-					break
-				}
-			}
-			if callerSym.Name == "" {
-				callerSym = trace.Symbol{Name: ref.CallerName, File: ref.CallerFile, Line: ref.CallerLine}
-			}
+		for _, caller := range allCallers {
 			resultCompact.Callers = append(resultCompact.Callers, CallerInfoCompact{
-				Symbol: callerSym,
+				Symbol: caller.Symbol,
 				CallSite: CallSiteCompact{
-					File: ref.File,
-					Line: ref.Line,
+					File: caller.CallSite.File,
+					Line: caller.CallSite.Line,
 				},
 			})
 		}
@@ -1249,33 +1255,10 @@ func (s *Server) handleTraceCallersFromStores(ctx context.Context, projectRoot s
 		data = resultCompact
 	} else {
 		result := trace.TraceResult{
-			Query:  symbolName,
-			Mode:   "fast",
-			Symbol: firstSymbol,
-		}
-		for _, ref := range allRefs {
-			var callerSym trace.Symbol
-			for _, ss := range stores {
-				callerSyms, err := ss.LookupSymbol(ctx, ref.CallerName)
-				if err != nil {
-					log.Printf("Warning: failed to lookup caller symbol %q: %v", ref.CallerName, err)
-				}
-				if len(callerSyms) > 0 {
-					callerSym = callerSyms[0]
-					break
-				}
-			}
-			if callerSym.Name == "" {
-				callerSym = trace.Symbol{Name: ref.CallerName, File: ref.CallerFile, Line: ref.CallerLine}
-			}
-			result.Callers = append(result.Callers, trace.CallerInfo{
-				Symbol: callerSym,
-				CallSite: trace.CallSite{
-					File:    ref.File,
-					Line:    ref.Line,
-					Context: ref.Context,
-				},
-			})
+			Query:   symbolName,
+			Mode:    "fast",
+			Symbol:  firstSymbol,
+			Callers: allCallers,
 		}
 
 		// Enrich with RPG
@@ -1676,7 +1659,7 @@ func (s *Server) handleRefsGraph(ctx context.Context, request mcp.CallToolReques
 		if err == nil {
 			for _, ref := range r {
 				readers = append(readers, RefUsage{
-					Symbol: resolveRefCallerSymbol(ss, ctx, ref),
+					Symbol: trace.ResolveCallerSymbol(ctx, ss, ref),
 					Access: ref.Kind,
 					AccessAt: trace.CallSite{
 						File:    ref.File,
@@ -1690,7 +1673,7 @@ func (s *Server) handleRefsGraph(ctx context.Context, request mcp.CallToolReques
 		if err == nil {
 			for _, ref := range w {
 				writers = append(writers, RefUsage{
-					Symbol: resolveRefCallerSymbol(ss, ctx, ref),
+					Symbol: trace.ResolveCallerSymbol(ctx, ss, ref),
 					Access: ref.Kind,
 					AccessAt: trace.CallSite{
 						File:    ref.File,
@@ -1818,7 +1801,7 @@ func (s *Server) handleRefsFromStores(ctx context.Context, symbolName string, ki
 
 		for _, ref := range refs {
 			usages = append(usages, RefUsage{
-				Symbol: resolveRefCallerSymbol(ss, ctx, ref),
+				Symbol: trace.ResolveCallerSymbol(ctx, ss, ref),
 				Access: ref.Kind,
 				AccessAt: trace.CallSite{
 					File:    ref.File,
@@ -1870,24 +1853,6 @@ func (s *Server) handleRefsFromStores(ctx context.Context, symbolName string, ki
 	}
 
 	return mcp.NewToolResultText(output), nil
-}
-
-func resolveRefCallerSymbol(ss trace.SymbolStore, ctx context.Context, ref trace.Reference) trace.Symbol {
-	if ref.CallerName == "" || ref.CallerName == "<top-level>" {
-		return trace.Symbol{Name: ref.CallerName, File: ref.CallerFile, Line: ref.CallerLine}
-	}
-
-	candidates, err := ss.LookupSymbol(ctx, ref.CallerName)
-	if err != nil || len(candidates) == 0 {
-		return trace.Symbol{Name: ref.CallerName, File: ref.CallerFile, Line: ref.CallerLine}
-	}
-	for _, sym := range candidates {
-		if sym.File == ref.CallerFile {
-			return sym
-		}
-	}
-
-	return candidates[0]
 }
 
 // WorkspaceIndexStatus represents the status of a workspace index.
