@@ -344,6 +344,10 @@ func (s *QdrantStore) parseChunkPayload(payload map[string]*qdrant.Value) *Chunk
 // qdrantScrollPageSize is the number of points read per scroll request.
 const qdrantScrollPageSize = 1000
 
+// qdrantLookupLimit bounds the points (and vectors) read by one
+// LookupByContentHash call.
+const qdrantLookupLimit = 64
+
 // scrollEach reads every point matching req, page by page. A single Scroll
 // call returns at most one page, so reading only the first page silently
 // truncated results on collections with more points than the page size.
@@ -543,7 +547,7 @@ func (s *QdrantStore) GetAllChunks(ctx context.Context) ([]Chunk, error) {
 }
 
 // LookupByContentHash searches Qdrant for a point matching the content hash.
-func (s *QdrantStore) LookupByContentHash(ctx context.Context, contentHash string) ([]float32, bool, error) {
+func (s *QdrantStore) LookupByContentHash(ctx context.Context, contentHash, contentPrefix string) ([]float32, bool, error) {
 	if contentHash == "" {
 		return nil, false, nil
 	}
@@ -554,26 +558,29 @@ func (s *QdrantStore) LookupByContentHash(ctx context.Context, contentHash strin
 		},
 	}
 
-	scrollResult, err := s.client.Scroll(ctx, &qdrant.ScrollPoints{
+	// Qdrant cannot match a payload prefix without a full-text index: check
+	// the content of the points sharing this content hash (usually one or a
+	// few). Only the first qdrantLookupLimit are checked: past that, a miss
+	// just re-embeds the chunk, which is cheaper than scanning every copy.
+	points, err := s.client.Scroll(ctx, &qdrant.ScrollPoints{
 		CollectionName: s.collectionName,
 		Filter:         filter,
-		Limit:          qdrant.PtrOf(uint32(1)),
+		Limit:          qdrant.PtrOf(uint32(qdrantLookupLimit)),
+		WithPayload:    qdrant.NewWithPayloadInclude("content"),
 		WithVectors:    qdrant.NewWithVectors(true),
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to lookup by content hash: %w", err)
 	}
-
-	if len(scrollResult) == 0 {
-		return nil, false, nil
-	}
-
-	point := scrollResult[0]
-	if point.Vectors != nil && point.Vectors.GetVector() != nil {
-		if dense := point.Vectors.GetVector().GetDense(); dense != nil {
-			return dense.GetData(), true, nil
+	// Stored content is sanitized (see buildChunkPayload): compare likewise.
+	contentPrefix = sanitizeUTF8(contentPrefix)
+	for _, point := range points {
+		if !strings.HasPrefix(point.GetPayload()["content"].GetStringValue(), contentPrefix) {
+			continue
+		}
+		if vec := pointVector(point); vec != nil {
+			return vec, true, nil
 		}
 	}
-
 	return nil, false, nil
 }
